@@ -98,7 +98,12 @@ final class AngleHub {
 
     private func ingest(_ degrees: Double) {
         latestInput = degrees
-        let out = processor.step(input: degrees, dt: elapsed())
+        // The new reading only becomes known now: spend the time since the last
+        // update on the *old* target, then retarget. Otherwise a long gap (4 Hz
+        // polling) is spent chasing the new angle and the effect pops in at
+        // full strength instead of animating on the display clock.
+        processor.advance(dt: elapsed())
+        let out = processor.step(input: degrees, dt: 0)
         onAngle?(out)
     }
 }

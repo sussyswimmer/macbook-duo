@@ -132,7 +132,13 @@ The display-synced spring hides the lower sample rate in the 15 Hz tier.
 - `EffectParameters` decodes per key with fallback to defaults, so one bad or missing key
   never discards the rest.
 
-### Not verified yet
-- Physical lid driving the effect. During the recorded session the lid only moved between
-  114–131°, never below activation (105°), so the overlay never triggered from the real
-  sensor. The simulator path is identical from `AngleHub` onward.
+### Physical lid test → **passes**
+Maxwell confirmed "it works". Logs (15:23:50–15:24:11) show the real sensor showing and
+hiding the overlay repeatedly, reaching `p = 1.000` and clearing every time, with polling
+stepping 4 → 15 → 60 Hz.
+
+### Fix: no pop-in after a slow-rate sample
+The same logs showed the overlay appearing straight at `p = 1.000` after a 4 Hz sample: the
+whole gap since the previous sample (≥250 ms ≈ 3τ) was spent moving toward the *new* angle,
+so the spring finished in a single step. `AngleHub.ingest` now spends elapsed time on the
+old target, then retargets, so the display clock animates the change from where it was.
