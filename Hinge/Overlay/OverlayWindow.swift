@@ -18,6 +18,8 @@ final class OverlayWindow: NSWindow {
         isReleasedWhenClosed = false
         animationBehavior = .none
         isExcludedFromWindowsMenu = true
+        // Allowed to be on screen while the session is locked.
+        canBecomeVisibleWithoutLogin = true
     }
 
     override var canBecomeKey: Bool { false }

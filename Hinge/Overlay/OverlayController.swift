@@ -37,6 +37,9 @@ final class OverlayController {
             // Bottom first so ordering is stable; all share one level.
             for w in strips { w.orderFrontRegardless() }
             isVisible = true
+            if let w = strips.first, let inSpace = LockScreenSpace.contains(w) {
+                log.info("overlay in lock-screen space: \(inSpace, privacy: .public)")
+            }
         }
         apply(state)
     }
@@ -102,6 +105,8 @@ final class OverlayController {
                 dim.layer?.backgroundColor = NSColor.black.cgColor
                 dim.layer?.opacity = 0
                 w.contentView = dim
+                // Above the lock screen too (so the effect works while locked).
+                LockScreenSpace.adopt(w)
                 return w
             }
             appliedRadii = Array(repeating: -1, count: strips.count)

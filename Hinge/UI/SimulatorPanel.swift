@@ -82,6 +82,10 @@ final class SimulatorPanel: NSPanel, NSWindowDelegate {
             setFrameOrigin(NSPoint(x: f.midX - frame.width / 2, y: f.minY + 80))
         }
         orderFrontRegardless()
+        // The overlay lives in the above-lock-screen space; join it so the
+        // panel's higher level still puts it on top of the effect. Done after
+        // ordering in, when the panel is guaranteed to have a window number.
+        LockScreenSpace.adopt(self)
     }
 
     var simulatedAngle: Double { slider.doubleValue }

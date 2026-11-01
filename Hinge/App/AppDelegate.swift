@@ -11,9 +11,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private lazy var overlay = OverlayController(locator: locator)
     private var menuBar: MenuBarController!
     private var simulatorPanel: SimulatorPanel?
+    private var panelWasVisibleBeforeLock = false
     private var cancellables: Set<AnyCancellable> = []
     private var state: EffectState = .inactive
     private let clock = FrameClock()
+    private var watchdog: DispatchSourceTimer?
+    /// Set when the overlay was pulled because samples stopped; cleared by the next sample.
+    private var samplesStale = false
+    /// Overlay is withdrawn if it is up and no sample has arrived for this long.
+    static let staleSampleTimeout: CFTimeInterval = 2
 
     private var params: EffectParameters { store.params }
 
@@ -27,6 +33,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menuBar.onSimulate = { [weak self] in self?.openSimulator() }
 
         hub.onAngle = { [weak self] θ in self?.angleChanged(θ) }
+        hub.onSample = { [weak self] in self?.samplesStale = false }
         clock.onFrame = { [weak self] in self?.hub.tick() }
         hub.sensor.onStateChange = { [weak self] s in
             self?.log.info("sensor state: \(String(describing: s), privacy: .public)")
@@ -39,6 +46,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self.clock.stop() // re-created on the right screen when next needed
             self.updateClock()
             self.refreshStatus()
+        }
+
+        let ws = NSWorkspace.shared.notificationCenter
+        ws.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
+            self?.systemDidWake()
+        }
+        let dnc = DistributedNotificationCenter.default()
+        dnc.addObserver(forName: .init("com.apple.screenIsLocked"), object: nil, queue: .main) { [weak self] _ in
+            self?.screenLockChanged(locked: true)
+        }
+        dnc.addObserver(forName: .init("com.apple.screenIsUnlocked"), object: nil, queue: .main) { [weak self] _ in
+            self?.screenLockChanged(locked: false)
         }
 
         store.$params
@@ -61,6 +80,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationWillTerminate(_ notification: Notification) {
         // Never leave the screen dimmed.
         overlay.teardown()
+        watchdog?.cancel()
         clock.stop()
         hub.stopAll()
     }
@@ -95,7 +115,55 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func render(_ newState: EffectState) {
         state = newState
-        overlay.update(newState)
+        overlay.update(samplesStale ? .inactive : newState)
+        updateWatchdog()
+    }
+
+    // MARK: Safety
+
+    /// While the overlay is up, check twice a second that samples keep coming.
+    /// If they stop (sensor lost, stuck after wake) the overlay is withdrawn so
+    /// the screen — including the lock screen — is never left dimmed.
+    private func updateWatchdog() {
+        if overlay.isVisible {
+            guard watchdog == nil else { return }
+            let t = DispatchSource.makeTimerSource(queue: .main)
+            t.schedule(deadline: .now() + 0.5, repeating: 0.5, leeway: .milliseconds(100))
+            t.setEventHandler { [weak self] in self?.checkSamplesFresh() }
+            watchdog = t
+            t.resume()
+        } else if let t = watchdog {
+            t.cancel()
+            watchdog = nil
+        }
+    }
+
+    private func checkSamplesFresh() {
+        let age = hub.lastSampleTime.map { CACurrentMediaTime() - $0 } ?? .infinity
+        guard age > Self.staleSampleTimeout, overlay.isVisible else { return }
+        log.error("no lid samples for \(age, format: .fixed(precision: 1), privacy: .public) s; withdrawing overlay")
+        samplesStale = true
+        render(state)
+    }
+
+    private func systemDidWake() {
+        log.info("system did wake")
+        clock.stop()         // display link is re-created on the right screen
+        hub.systemDidWake()  // fresh sensor handle; samples resume within a frame
+        updateRate()
+    }
+
+    private func screenLockChanged(locked: Bool) {
+        log.info("screen \(locked ? "locked" : "unlocked", privacy: .public)")
+        // The panel lives above the lock screen with the overlay; keep it off
+        // the lock screen itself.
+        guard let panel = simulatorPanel else { return }
+        if locked {
+            panelWasVisibleBeforeLock = panel.isVisible
+            panel.orderOut(nil)
+        } else if panelWasVisibleBeforeLock {
+            panel.orderFrontRegardless()
+        }
     }
 
     /// Adaptive polling. Uses the lower of the raw and smoothed angle so fast

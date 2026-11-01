@@ -42,11 +42,19 @@ final class LidSensor: AngleSource {
     private var device: IOHIDDevice?
     private var timer: DispatchSourceTimer?
     private var currentRate: Double = 0
+    /// Rate the owner asked for; kept while the device is being recovered.
+    private var desiredRate: Double = 0
     private var consecutiveFailures = 0
+    private var retryWork: DispatchWorkItem?
+    private var retryDelay: TimeInterval = LidSensor.minRetryDelay
+    private static let minRetryDelay: TimeInterval = 1
+    private static let maxRetryDelay: TimeInterval = 30
 
     deinit {
         timer?.cancel()
-        closeDevice()
+        retryWork?.cancel()
+        if let device { IOHIDDeviceClose(device, IOOptionBits(kIOHIDOptionsTypeNone)) }
+        if let manager { IOHIDManagerClose(manager, IOOptionBits(kIOHIDOptionsTypeNone)) }
     }
 
     // MARK: AngleSource
@@ -54,17 +62,23 @@ final class LidSensor: AngleSource {
     func start(rateHz: Double) {
         dispatchPrecondition(condition: .onQueue(.main))
         guard rateHz > 0 else { stop(); return }
-        if device == nil, !openDevice() { return }
+        desiredRate = rateHz
+        if device == nil {
+            guard retryWork == nil else { return } // recovery pending; it will start us
+            guard openDevice() else { scheduleRetry(); return }
+        }
         if timer != nil, rateHz == currentRate { return }
         currentRate = rateHz
         timer?.cancel()
 
+        guard let device else { return }
         let t = DispatchSource.makeTimerSource(queue: queue)
         let interval = 1.0 / rateHz
         // Generous leeway at low rates lets the system coalesce wake-ups.
         let leeway = DispatchTimeInterval.milliseconds(rateHz <= 10 ? 50 : 2)
         t.schedule(deadline: .now(), repeating: interval, leeway: leeway)
-        t.setEventHandler { [weak self] in self?.poll() }
+        // The handler captures the device so the poll queue never reads `self.device`.
+        t.setEventHandler { [weak self] in self?.poll(device) }
         timer = t
         t.resume()
         state = .running
@@ -76,7 +90,46 @@ final class LidSensor: AngleSource {
         timer?.cancel()
         timer = nil
         currentRate = 0
+        desiredRate = 0
+        retryWork?.cancel()
+        retryWork = nil
         if state == .running { state = .idle }
+    }
+
+    /// Drop the device and open it again (after wake, or after read failures).
+    func reopen() {
+        dispatchPrecondition(condition: .onQueue(.main))
+        log.info("reopening lid sensor")
+        let rate = desiredRate
+        timer?.cancel()
+        timer = nil
+        currentRate = 0
+        closeDevice()
+        retryWork?.cancel()
+        retryWork = nil
+        retryDelay = Self.minRetryDelay
+        if rate > 0 { start(rateHz: rate) }
+    }
+
+    /// Quiet retry with exponential back-off; never spins.
+    private func scheduleRetry() {
+        guard desiredRate > 0, retryWork == nil else { return }
+        let delay = retryDelay
+        retryDelay = min(retryDelay * 2, Self.maxRetryDelay)
+        log.info("lid sensor retry in \(delay, privacy: .public) s")
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.retryWork = nil
+            let rate = self.desiredRate
+            guard rate > 0 else { return }
+            self.timer?.cancel()
+            self.timer = nil
+            self.currentRate = 0
+            self.closeDevice()
+            self.start(rateHz: rate)
+        }
+        retryWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
     }
 
     /// One synchronous read. Returns nil if the device is unavailable.
@@ -117,14 +170,19 @@ final class LidSensor: AngleSource {
         manager = mgr
         device = dev
         consecutiveFailures = 0
+        retryDelay = Self.minRetryDelay
         return true
     }
 
     private func closeDevice() {
-        if let device { IOHIDDeviceClose(device, IOOptionBits(kIOHIDOptionsTypeNone)) }
-        if let manager { IOHIDManagerClose(manager, IOOptionBits(kIOHIDOptionsTypeNone)) }
+        let (dev, mgr) = (device, manager)
         device = nil
         manager = nil
+        // Close on the poll queue so it is ordered after any in-flight read.
+        queue.async {
+            if let dev { IOHIDDeviceClose(dev, IOOptionBits(kIOHIDOptionsTypeNone)) }
+            if let mgr { IOHIDManagerClose(mgr, IOOptionBits(kIOHIDOptionsTypeNone)) }
+        }
     }
 
     private enum ReadResult {
@@ -146,8 +204,7 @@ final class LidSensor: AngleSource {
     }
 
     /// Runs on `queue`.
-    private func poll() {
-        guard let device else { return }
+    private func poll(_ device: IOHIDDevice) {
         let result = Self.read(device)
         DispatchQueue.main.async { [weak self] in
             guard let self, self.timer != nil else { return }
@@ -163,7 +220,14 @@ final class LidSensor: AngleSource {
                 if self.consecutiveFailures == 1 {
                     self.log.error("feature report read failed: \(r, privacy: .public)")
                 }
-                if self.consecutiveFailures >= 10 { self.state = .readFailed(r) }
+                if self.consecutiveFailures == 10 {
+                    self.state = .readFailed(r)
+                    self.timer?.cancel()
+                    self.timer = nil
+                    self.currentRate = 0
+                    self.closeDevice()
+                    self.scheduleRetry()
+                }
             }
         }
     }

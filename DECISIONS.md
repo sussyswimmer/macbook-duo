@@ -142,3 +142,40 @@ The same logs showed the overlay appearing straight at `p = 1.000` after a 4 Hz 
 whole gap since the previous sample (≥250 ms ≈ 3τ) was spent moving toward the *new* angle,
 so the spring finished in a single step. `AngleHub.ingest` now spends elapsed time on the
 old target, then retargets, so the display clock animates the change from where it was.
+
+## Lock screen support (2026-11-01, requested by Maxwell)
+Goal: the effect keeps working while the Mac is locked — lowering the lid over the lock
+screen, and the lock screen emerging from blur/black when the lid opens after sleep.
+
+### How
+- The lock screen lives in its own window-server space at absolute level 300, above every
+  window level, so `.screenSaver` windows render *under* it.
+- `LockScreenSpace` creates a SkyLight space at absolute level **400** (the level used for
+  notifications over the lock screen), shows it, and moves our windows into it with
+  `SLSSpaceAddWindowsAndRemoveFromSpaces(…, 7)`. Private SPI via `dlsym`; if unavailable the
+  overlay simply stays below the lock screen. Approach learned from `Lakr233/SkyLightWindow`
+  (MIT); our own ~70-line implementation, no code copied.
+- Overlay strips are adopted at creation and set `canBecomeVisibleWithoutLogin = true`.
+- Verified with a probe: adoption survives `orderOut`/`orderFront`. `SLSCopySpacesForWindows`
+  with selector 7 returns nothing for such spaces; use `0xFFFF`.
+- **Ordering inside the space follows window level**, but a window in the space is above
+  every window outside it regardless of level. So the simulator panel must also join the
+  space (else it ends up under the overlay — Maxwell saw exactly that). It is adopted in
+  `present()`, after ordering in, because before that it has no window number. Verified by
+  Maxwell: panel crisp, on top, draggable. The panel is hidden while the screen is locked
+  (`com.apple.screenIsLocked` / `screenIsUnlocked`) and restored afterwards.
+
+### Safety (now essential: the overlay can cover the lock screen)
+- **Watchdog:** while the overlay is visible, a 2 Hz check withdraws it if no sensor sample
+  has arrived for 2 s; it comes back with the next sample. Uses `CACurrentMediaTime()`, which
+  doesn't advance during sleep, so sleep itself never trips it.
+- **Wake:** `NSWorkspace.didWakeNotification` → fresh sensor handle (`LidSensor.reopen()`),
+  smoothing clock reset, display link re-created.
+- **Read failures:** 10 consecutive failed reads → close device, retry with exponential
+  back-off (1 s … 30 s). Same back-off if the device can't be opened. Never spins.
+- The overlay ignores mouse events and can't become key, so typing the password always
+  reaches the lock screen.
+
+### Not verified yet
+Lock-screen behaviour itself (Ctrl+Cmd+Q then lowering the lid; and close → sleep → open).
+In the recorded run there was no lock event, no sleep/wake, and the overlay never showed.

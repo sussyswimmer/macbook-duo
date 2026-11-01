@@ -15,12 +15,16 @@ final class AngleHub {
 
     /// Smoothed angle, after every sample and every tick.
     var onAngle: ((Double) -> Void)?
+    /// A fresh sample arrived (called before `onAngle`).
+    var onSample: (() -> Void)?
 
     private(set) var source: Source = .sensor
     private(set) var rateHz: Double = 0
     /// Last unsmoothed sample from the active source.
     private(set) var latestInput: Double?
     var smoothed: Double? { processor.output }
+    /// `CACurrentMediaTime()` of the last sample (does not advance during sleep).
+    private(set) var lastSampleTime: CFTimeInterval?
     var isSettled: Bool { processor.isSettled }
 
     private let log = Logger(subsystem: "com.maxwell.hinge", category: "AngleHub")
@@ -62,6 +66,14 @@ final class AngleHub {
         applyRate()
     }
 
+    /// After wake: forget timing so the first sample isn't measured against
+    /// pre-sleep time, and get a fresh handle on the sensor.
+    func systemDidWake() {
+        lastAdvance = nil
+        lastSampleTime = nil
+        if source == .sensor, rateHz > 0 { sensor.reopen() }
+    }
+
     func stopAll() {
         sensor.stop()
         simulator.stop()
@@ -98,6 +110,8 @@ final class AngleHub {
 
     private func ingest(_ degrees: Double) {
         latestInput = degrees
+        lastSampleTime = CACurrentMediaTime()
+        onSample?()
         // The new reading only becomes known now: spend the time since the last
         // update on the *old* target, then retarget. Otherwise a long gap (4 Hz
         // polling) is spent chasing the new angle and the effect pops in at
