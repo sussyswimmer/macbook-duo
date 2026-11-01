@@ -55,9 +55,12 @@ Feature report 1 returns 3 bytes `[01, lo, hi]`. Evidence:
 | normal working angle (screen in use) | `01 7a 00` | 122 |
 | moments later, lid pushed further down (still in use) | `01 60 00` | 96 |
 
+| lid fully open (Phase 1 recorded session) | — | 131 |
+
 If the unit were 0.01°, 122 would mean 1.2° — the lid would be shut while Maxwell was
-using the screen. So the value is whole degrees, with 1° resolution. Still worth a
-3-point physical check (closed / 90° / fully open) — listed under *Needs Maxwell*.
+using the screen — and 131 at fully open matches a MacBook Pro's ~130–135° maximum. So
+the value is whole degrees, with 1° resolution. Still missing: a reading at ~90° and
+just-closed (listed under *Needs Maxwell*).
 
 Consequence of 1° resolution: the 0.3° deadband only filters sensor noise between
 neighbouring integers; the spring smoothing is what turns 1° steps into smooth motion.
@@ -66,3 +69,70 @@ neighbouring integers; the spring smoothing is what turns 1° steps into smooth 
 Critically-damped spring, integrated with its exact closed-form solution (so it's
 frame-rate independent). `ω = 4 / smoothingMs`: a step is ~91% done after `smoothingMs`
 and fully settled by 3×. No overshoot.
+
+## Phase 1 — overlay + blur/dim (2026-11-01)
+
+### Q2: does behind-window `NSVisualEffectView` blur other apps' windows? → **yes, but unusable here**
+- First attempt (full-screen `NSVisualEffectView`, `.hudWindow`, gradient `maskImage`, black
+  dim layer): Maxwell saw **only dimming/tint, no blur**, and the motion was **jittery**.
+- Probe A (plain `NSVisualEffectView`, `.fullScreenUI`, no mask, no dim, top half of the
+  screen at `.screenSaver` level): **blurred**. So behind-window blur works from a
+  borderless screen-saver-level window; the per-pixel-alpha mask is what broke it (partial
+  alpha just cross-fades sharp content with a fixed blur and reads as a tint), and
+  rebuilding `maskImage` every frame caused the jitter.
+- The material's radius is fixed, so it can't express `blurAt(v)` anyway.
+
+### Decision: Phase 1 blur uses the window-server background blur, in strips
+- Probe B: `CGSSetWindowBackgroundBlurRadius(CGSMainConnectionID(), windowNumber, 24)` on a
+  borderless window with a 1/255 black background → Maxwell: **"blurred, no tint"**.
+- It is **private SPI** (the call terminal apps use for blurred backgrounds). Acceptable for
+  a personal, never-distributed tool. Looked up via `dlsym`, so if a macOS update removes it
+  the app degrades to dim-only instead of failing to launch (`WindowServerBlur.swift`).
+- Graduated blur: the built-in display is covered by **24 horizontal strip windows**
+  (`OverlayController.stripCount`), each blurring with radius `blurAt(v)` at its centre.
+  Dim is a black layer at opacity `e·maxDim` in every strip (a Core Animation opacity change,
+  no AppKit redraw). The radius is only re-sent when its rounded value changes.
+- Maxwell's check with the simulator: **graduated blur visible, smooth, panel crisp, clicks
+  pass through, clears fully above 105°.** No visible seams between strips were reported.
+- Phase 2 still replaces this with the captured + Metal renderer (lean needs capture);
+  this path stays as the fallback when Screen Recording isn't granted.
+
+### Decision: animation is display-synced
+`FrameClock` (a `CADisplayLink` from the built-in `NSScreen`) advances the spring and
+re-renders every display frame while the spring is moving and the sensor is in a fast tier;
+it pauses as soon as the spring settles. Samples and frames share one clock in `AngleHub`,
+so time is never double-counted.
+
+### Decision: adaptive polling gets a middle tier (deviation from ARCHITECTURE §3)
+Measured cost of one `IOHIDDeviceGetReport`: ~0.9 ms wall, ~0.2–0.3 ms CPU. Polling at
+60 Hz cost ~3% CPU, and Maxwell's normal working angle (113–122°) sits inside the
+documented 60 Hz zone (≤ activation + 15° = 120°). New tiers:
+
+| Smoothed/raw angle (lower of the two) | Rate |
+|---|---|
+| > activation + 15° | 4 Hz |
+| activation + 5° … + 15° | 15 Hz |
+| ≤ activation + 5° (incl. the active zone) | 60 Hz |
+| disabled | stopped (4 Hz if "Show lid angle in menu bar" is on) |
+
+Slowing down needs an extra 3° (hysteresis) so a lid resting on a boundary doesn't flip
+rates every tick (observed before the fix: 4→60→4 Hz within 10 ms at 120°).
+The display-synced spring hides the lower sample rate in the 15 Hz tier.
+**Measured:** lid at 121° → 4 Hz, Hinge at **0.0–0.2% CPU**.
+
+### Smaller decisions
+- **Simulator panel:** opening it switches to the simulated source (slider at 120°, or
+  `-debugSimAngle N`); closing it returns to the real sensor. The processor keeps its state
+  across switches, so the effect glides rather than jumps. While the simulator is the source
+  it is always serviced at 60 Hz.
+- `isFloatingPanel = true` resets an `NSPanel`'s level to `.floating`, so it must be set
+  before `level = .screenSaver + 1` (caught via the window list: the panel was at layer 3).
+- **QA hook:** `open Hinge.app --args -debugSimAngle 60` launches straight into the
+  simulator at that angle.
+- `EffectParameters` decodes per key with fallback to defaults, so one bad or missing key
+  never discards the rest.
+
+### Not verified yet
+- Physical lid driving the effect. During the recorded session the lid only moved between
+  114–131°, never below activation (105°), so the overlay never triggered from the real
+  sensor. The simulator path is identical from `AngleHub` onward.

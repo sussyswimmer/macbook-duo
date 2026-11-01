@@ -153,6 +153,7 @@ final class LidSensor: AngleSource {
             guard let self, self.timer != nil else { return }
             switch result {
             case .ok(let raw, let deg):
+                self.log.debug("raw=\(raw, privacy: .public)")
                 self.consecutiveFailures = 0
                 if self.state != .running { self.state = .running }
                 self.onRaw?(raw)
