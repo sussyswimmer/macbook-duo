@@ -1,0 +1,55 @@
+name: Hinge
+options:
+  bundleIdPrefix: com.maxwell
+  deploymentTarget:
+    macOS: "14.0"
+  createIntermediateGroups: true
+
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    MACOSX_DEPLOYMENT_TARGET: "14.0"
+    DEVELOPMENT_TEAM: 6W76XB4K67
+    CODE_SIGN_STYLE: Manual
+    CODE_SIGN_IDENTITY: "Apple Development"
+    ENABLE_HARDENED_RUNTIME: YES
+
+targets:
+  Hinge:
+    type: application
+    platform: macOS
+    sources:
+      - path: Hinge
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.maxwell.hinge
+        PRODUCT_NAME: Hinge
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        CODE_SIGN_ENTITLEMENTS: Hinge/Resources/Hinge.entitlements
+        INFOPLIST_FILE: Hinge/Resources/Info.plist
+        GENERATE_INFOPLIST_FILE: NO
+        COMBINE_HIDPI_IMAGES: YES
+
+  HingeTests:
+    type: bundle.unit-test
+    platform: macOS
+    # Pure logic is compiled straight into the test bundle (no host app), so
+    # running tests never launches the menu-bar app or touches the sensor.
+    sources:
+      - path: HingeTests
+      - path: Hinge/Model
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.maxwell.hinge.tests
+        GENERATE_INFOPLIST_FILE: YES
+
+schemes:
+  Hinge:
+    build:
+      targets:
+        Hinge: all
+        HingeTests: [test]
+    test:
+      targets:
+        - HingeTests
