@@ -27,11 +27,11 @@ final class OverlayController {
 
     func update(_ state: EffectState) {
         lastState = state
-        guard state.isActive, let screen = locator.builtInScreen else {
+        guard state.isActive, let frame = targetFrame() else {
             hide()
             return
         }
-        layoutStrips(for: screen.frame)
+        layoutStrips(for: frame)
         if !isVisible {
             log.info("overlay shown (p=\(state.p, format: .fixed(precision: 3), privacy: .public))")
             // Bottom first so ordering is stable; all share one level.
@@ -46,10 +46,24 @@ final class OverlayController {
 
     /// Display configuration changed: re-fit (or drop) the windows.
     func screensChanged() {
-        if let screen = locator.builtInScreen, !strips.isEmpty {
-            layoutStrips(for: screen.frame)
+        if let frame = targetFrame(), !strips.isEmpty {
+            layoutStrips(for: frame)
         }
         update(lastState)
+    }
+
+    /// Where the overlay goes. Normally the built-in display. When the lid shuts,
+    /// macOS removes that display; if it was the only one, keep the windows where
+    /// they were (already near-black) so that when the lid reopens — usually
+    /// onto the lock screen — the overlay is already in place and unwinds with
+    /// the sensor instead of appearing late. With any other display present
+    /// (clamshell) the overlay is dropped so it can never land on that display.
+    private func targetFrame() -> NSRect? {
+        if let screen = locator.builtInScreen { return screen.frame }
+        if isVisible, stripScreenFrame != .zero, !locator.otherScreensPresent {
+            return stripScreenFrame
+        }
+        return nil
     }
 
     func hide() {

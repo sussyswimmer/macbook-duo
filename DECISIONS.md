@@ -176,6 +176,26 @@ screen, and the lock screen emerging from blur/black when the lid opens after sl
 - The overlay ignores mouse events and can't become key, so typing the password always
   reaches the lock screen.
 
+### First lock test (15:51) — what the logs showed
+- Lid closed at 15:51:08 → macOS removed the built-in display → overlay hid itself.
+- Display back at 15:51:09 with the lid already ~100° → effect cleared at once.
+- Locked at 15:51:13 (after reopening, no real sleep). While locked the overlay **was** shown
+  in the above-lock-screen space, but only at p ≤ 0.13 → eased e ≈ 0.04 → ~4% dim, ~1 pt
+  blur: invisible. Maxwell saw "nothing at all", which fits; that test was inconclusive
+  about whether drawing over the lock screen works.
+
+### Decision: keep the overlay through lid-shut when the built-in display was the only one
+Maxwell wants the lock screen to *emerge* from dark/blur as the lid opens. That can't happen
+if the overlay is torn down when the lid shuts (macOS removes the built-in display) and
+only rebuilt after the display reappears — by then the lid is nearly open.
+`OverlayController.targetFrame()`: if the built-in display disappears while the overlay is
+visible and **no other display is present**, keep the windows at their last frame and
+strength (≈ black at lid-shut). On reopen they are already there and unwind with the
+sensor. With any other display present (clamshell) the overlay is dropped immediately so it
+can't end up on that display. The 2 s stale-sample watchdog still withdraws it if the sensor
+doesn't come back after wake.
+
 ### Not verified yet
-Lock-screen behaviour itself (Ctrl+Cmd+Q then lowering the lid; and close → sleep → open).
-In the recorded run there was no lock event, no sleep/wake, and the overlay never showed.
+Lock-screen behaviour with this build: (A) Ctrl+Cmd+Q, then lid to ~40°; (B) lid fully shut
+for ~15 s so the Mac sleeps, then reopen slowly. In the session after this change the logs
+show no lock, no sleep and the lid between 110–123°, so neither test has been run yet.

@@ -23,6 +23,13 @@ final class DisplayLocator {
         if let observer { NotificationCenter.default.removeObserver(observer) }
     }
 
+    /// Any active display other than the built-in one (external, AirPlay, Sidecar…).
+    var otherScreensPresent: Bool {
+        NSScreen.screens.contains { screen in
+            !(Self.displayID(of: screen).map { CGDisplayIsBuiltin($0) != 0 } ?? false)
+        }
+    }
+
     static func displayID(of screen: NSScreen) -> CGDirectDisplayID? {
         (screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)
             .map { CGDirectDisplayID($0.uint32Value) }
